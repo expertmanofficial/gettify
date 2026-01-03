@@ -1,4 +1,4 @@
-# Gettify
+![Gettify logo](https://imgur.com/a/4t0NavY) # Gettify
 
 Gettify is a fork and continuation of the original Obtanium app, designed to obtain and update Android apps directly from custom sources like GitHub, GitLab, F-Droid, and more — bypassing traditional app stores for greater freedom and control.
 
