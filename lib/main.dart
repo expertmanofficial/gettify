@@ -7,10 +7,9 @@
 //   http: ^1.2.1
 //   path_provider: ^2.1.3
 //   url_launcher: ^6.3.0
-//   material_color_utilities: ^0.8.0
 
 import 'dart:convert';
-import 'dart:io'; // FIX: Correct import path for dart:io
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
@@ -33,19 +32,24 @@ class MainApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorSchemeSeed: Colors.blue,
-        useMaterial3: true,
-        brightness: Brightness.light,
-      ),
-      darkTheme: ThemeData(
-        colorSchemeSeed: Colors.blue,
-        useMaterial3: true,
-        brightness: Brightness.dark,
-      ),
-      home: const HomeScreen(),
+    return Consumer<AppState>(
+      builder: (context, appState, child) {
+        return MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: ThemeData(
+            colorSchemeSeed: Colors.blue,
+            useMaterial3: true,
+            brightness: Brightness.light,
+          ),
+          darkTheme: ThemeData(
+            colorSchemeSeed: Colors.blue,
+            useMaterial3: true,
+            brightness: Brightness.dark,
+          ),
+          themeMode: appState.themeMode,
+          home: const HomeScreen(),
+        );
+      },
     );
   }
 }
@@ -121,11 +125,17 @@ class AppState extends ChangeNotifier {
   List<TrackedApp> _apps = _demoApps;
   int checkInterval = 6;
   bool wifiOnly = true;
+  ThemeMode themeMode = ThemeMode.system;
 
   List<TrackedApp> get allApps => _apps;
 
   List<TrackedApp> get appsWithUpdates =>
       _apps.where((app) => app.hasUpdate).toList();
+
+  void setThemeMode(ThemeMode mode) {
+    themeMode = mode;
+    notifyListeners();
+  }
 
   void setCheckInterval(int hours) {
     checkInterval = hours;
@@ -224,7 +234,6 @@ class GitHubProvider implements SourceProvider {
         throw Exception('No releases found for $repoPath');
       }
 
-      // TYPO FIX: prerelease
       final filteredReleases = trackPreReleases
           ? releases
           : releases.where((r) => r['prerelease'] == false).toList();
@@ -453,6 +462,44 @@ class SettingsTab extends StatelessWidget {
                 child: Column(
                   children: [
                     ListTile(
+                      leading: const Icon(Icons.dark_mode_outlined),
+                      title: const Text('Theme'),
+                      trailing: Text(state.themeMode
+                          .toString()
+                          .split('.')
+                          .last),
+                      onTap: () =>
+                          showDialog(
+                            context: context,
+                            builder: (_) =>
+                                AlertDialog(
+                                  title: const Text('Theme'),
+                                  content: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: ThemeMode.values
+                                        .map((t) =>
+                                        RadioListTile<ThemeMode>(
+                                          title: Text(t
+                                              .toString()
+                                              .split('.')
+                                              .last),
+                                          value: t,
+                                          groupValue: state.themeMode,
+                                          onChanged: (val) {
+                                            if (val != null) {
+                                              context
+                                                  .read<AppState>()
+                                                  .setThemeMode(val);
+                                              Navigator.pop(context);
+                                            }
+                                          },
+                                        ))
+                                        .toList(),
+                                  ),
+                                ),
+                          ),
+                    ),
+                    ListTile(
                       title: const Text('Check interval'),
                       trailing: Text('${state.checkInterval} hours'),
                       onTap: () =>
@@ -501,14 +548,13 @@ class SettingsTab extends StatelessWidget {
                       leading: const Icon(Icons.download),
                       title: const Text('Export apps'),
                       onTap: () async {
-                        // FIX: Avoid context across async gaps
                         final messenger = ScaffoldMessenger.of(context);
                         final appState = context.read<AppState>();
                         try {
                           final dir =
                           await getApplicationDocumentsDirectory();
-                          // TYPO FIX: Obtanium
-                          final file = File('${dir.path}/Obtanium_apps.json');
+                          // FIX: Changed file name
+                          final file = File('${dir.path}/Gettify_apps.json');
                           final jsonString = json.encode(
                               appState.allApps.map((a) => a.toJson()).toList());
                           await file.writeAsString(jsonString);
@@ -525,13 +571,12 @@ class SettingsTab extends StatelessWidget {
                       leading: const Icon(Icons.upload),
                       title: const Text('Import apps'),
                       onTap: () async {
-                        // FIX: Avoid context across async gaps
                         final messenger = ScaffoldMessenger.of(context);
                         final appState = context.read<AppState>();
                         try {
                           final dir = await getApplicationDocumentsDirectory();
-                          // TYPO FIX: Obtanium
-                          final file = File('${dir.path}/Obtanium_apps.json');
+                          // FIX: Changed file name
+                          final file = File('${dir.path}/Gettify_apps.json');
                           if (await file.exists()) {
                             final jsonStr = await file.readAsString();
                             final list =
@@ -562,13 +607,19 @@ class SettingsTab extends StatelessWidget {
               Card(
                 child: Column(
                   children: [
+                    const ListTile(
+                      leading: Icon(Icons.info_outline),
+                      title: Text('Version'),
+                      subtitle: Text('1.0.0'),
+                    ),
                     ListTile(
                       leading: const Icon(Icons.code),
                       title: const Text('Source code'),
                       onTap: () =>
                           launchUrl(
+                            // FIX: Corrected URL
                               Uri.parse(
-                                  'https://github.com/imorisune/obtanium_continued'),
+                                  'https://github.com/expertmanofficial/gettify'),
                               mode: LaunchMode.externalApplication),
                     ),
                     ListTile(
@@ -798,7 +849,6 @@ class EmptyState extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          // FIX: Using the standard, non-deprecated .withOpacity() method which works universally.
           Icon(icon, size: 80, color: color.withOpacity(0.5)),
           const SizedBox(height: 16),
           Text(
@@ -807,7 +857,6 @@ class EmptyState extends StatelessWidget {
           Text(subtitle,
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyMedium
-              // FIX: Using the standard, non-deprecated .withOpacity() method.
                   ?.copyWith(color: color.withOpacity(0.7))),
         ],
       ),
@@ -884,7 +933,6 @@ class _AddAppBottomSheetState extends State<AddAppBottomSheet> {
                   DropdownMenuItem(
                       value: 'GitHub', child: Text('GitHub Releases')),
                   DropdownMenuItem(value: 'GitLab', child: Text('GitLab')),
-                  // TYPO FIX: Codeberg / Forgejo
                   DropdownMenuItem(
                       value: 'Codeberg', child: Text('Codeberg / Forgejo')),
                   DropdownMenuItem(value: 'F-Droid', child: Text('F-Droid')),
@@ -926,7 +974,6 @@ class _AddAppBottomSheetState extends State<AddAppBottomSheet> {
                     border: OutlineInputBorder()),
               ),
               SwitchListTile(
-                // TYPO FIX: pre-releases
                 title: const Text('Include pre-releases'),
                 value: _preReleases,
                 onChanged: (v) => setState(() => _preReleases = v),
@@ -978,7 +1025,6 @@ final List<TrackedApp> _demoApps = [
     lastChecked: DateTime.now().subtract(const Duration(minutes: 45)),
   ),
   TrackedApp(
-    // TYPO FIX: ReVanced
     id: 'revanced',
     name: 'ReVanced Manager',
     author: 'ReVanced Team',
