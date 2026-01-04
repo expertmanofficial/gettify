@@ -2,9 +2,7 @@
 
 
 
-<img width="64" height="64" alt="image" src="https://github.com/user-attachments/assets/554314c3-4ec1-4392-bb29-37e134664f13" />
-
-# Gettify
+<h2><img width="50" height="50" alt="image" src="https://github.com/user-attachments/assets/554314c3-4ec1-4392-bb29-37e134664f13" /> Gettify </h2>
 
 Gettify is a fork and continuation of the original Obtanium app, designed to obtain and update Android apps directly from custom sources like GitHub, GitLab, F-Droid, and more — bypassing traditional app stores for greater freedom and control.
 
