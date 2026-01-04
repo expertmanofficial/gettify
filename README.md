@@ -1,4 +1,4 @@
-<img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/554314c3-4ec1-4392-bb29-37e134664f13" /> 
+<img width="64" height="64" alt="image" src="https://github.com/user-attachments/assets/554314c3-4ec1-4392-bb29-37e134664f13" />
 
 # Gettify
 
