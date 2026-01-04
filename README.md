@@ -1,3 +1,7 @@
+<img width="1344" height="768" alt="image" src="https://github.com/user-attachments/assets/2f7d8de8-1fab-4cca-8dd5-1ae1d7c244a6" />
+
+
+
 <img width="64" height="64" alt="image" src="https://github.com/user-attachments/assets/554314c3-4ec1-4392-bb29-37e134664f13" />
 
 # Gettify
