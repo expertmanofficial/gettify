@@ -84,4 +84,4 @@ Fork the repo, make changes, commit/push, open Pull Request. See CONTRIBUTING.md
 ### License
 GPL-3.0 (same as original Obtanium)
 
-For questions, contact me on X at [@imorisune](https://x.com/imorisune) or open an issue.
+For questions, contact me on X at [@imorisune](https://x.com/imorisune) or at [@ExpertPlus_](https://x.com/ExpertPlus_) or open an issue.
