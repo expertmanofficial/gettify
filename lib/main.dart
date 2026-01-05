@@ -1,50 +1,47 @@
-// IMPORTANT: Make sure your pubspec.yaml has these packages, then run 'flutter pub get'
-//
-// dependencies:
-//   flutter:
-//     sdk: flutter
-//   provider: ^6.1.2
-//   http: ^1.2.1
-//   path_provider: ^2.1.3
-//   url_launcher: ^6.3.0
-
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:intl/intl.dart';
 
-// ===================== MAIN & APP SETUP =====================
-
-void main() {
+// ===================== MAIN =====================
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final appState = AppState();
+  await appState.loadSettings();
   runApp(
-    ChangeNotifierProvider(
-      create: (context) => AppState(),
-      child: const MainApp(),
+    ChangeNotifierProvider.value(
+      value: appState,
+      child: const GettifyApp(),
     ),
   );
 }
 
-class MainApp extends StatelessWidget {
-  const MainApp({super.key});
+class GettifyApp extends StatelessWidget {
+  const GettifyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return Consumer<AppState>(
-      builder: (context, appState, child) {
+      builder: (context, appState, _) {
         return MaterialApp(
           debugShowCheckedModeBanner: false,
           theme: ThemeData(
-            colorSchemeSeed: Colors.blue,
-            useMaterial3: true,
+            colorSchemeSeed: Colors.deepPurple,
+            useMaterial3: appState.useMaterialYou,
             brightness: Brightness.light,
+            fontFamily: appState.useSystemFont ? null : 'Roboto',
           ),
           darkTheme: ThemeData(
-            colorSchemeSeed: Colors.blue,
-            useMaterial3: true,
+            colorSchemeSeed: Colors.deepPurple,
+            useMaterial3: appState.useMaterialYou,
             brightness: Brightness.dark,
+            scaffoldBackgroundColor: appState.usePureBlackDarkTheme ? Colors.black : null,
           ),
           themeMode: appState.themeMode,
           home: const HomeScreen(),
@@ -54,8 +51,7 @@ class MainApp extends StatelessWidget {
   }
 }
 
-// ===================== DATA MODELS & STATE =====================
-
+// ===================== DATA MODELS =====================
 class TrackedApp {
   final String id;
   final String name;
@@ -65,236 +61,203 @@ class TrackedApp {
   final String latestVersion;
   final String sourceType;
   final DateTime lastChecked;
+  final DateTime? lastUpdated;
   final bool hasUpdate;
   final String sourceUrl;
   final String? packageName;
-  final String? apkRegex;
-  final bool? trackPreReleases;
+  final bool isInstalled;
 
   TrackedApp({
     required this.id,
     required this.name,
-    this.author = 'Unknown Author',
+    this.author = 'Unknown',
     required this.iconUrl,
     required this.currentVersion,
     required this.latestVersion,
     required this.sourceType,
     required this.lastChecked,
+    this.lastUpdated,
     this.sourceUrl = '',
     this.packageName,
-    this.apkRegex,
-    this.trackPreReleases,
+    this.isInstalled = true,
   }) : hasUpdate = currentVersion != latestVersion;
 
-  factory TrackedApp.fromJson(Map<String, dynamic> json) {
-    return TrackedApp(
-      id: json['id'] as String,
-      name: json['name'] as String,
-      author: json['author'] as String,
-      iconUrl: json['iconUrl'] as String,
-      currentVersion: json['currentVersion'] as String,
-      latestVersion: json['latestVersion'] as String,
-      sourceType: json['sourceType'] as String,
-      lastChecked: DateTime.parse(json['lastChecked'] as String),
-      sourceUrl: json['sourceUrl'] as String? ?? '',
-      packageName: json['packageName'] as String?,
-      apkRegex: json['apkRegex'] as String?,
-      trackPreReleases: json['trackPreReleases'] as bool?,
-    );
-  }
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'author': author,
+    'iconUrl': iconUrl,
+    'currentVersion': currentVersion,
+    'latestVersion': latestVersion,
+    'sourceType': sourceType,
+    'lastChecked': lastChecked.toIso8601String(),
+    'lastUpdated': lastUpdated?.toIso8601String(),
+    'sourceUrl': sourceUrl,
+    'packageName': packageName,
+    'isInstalled': isInstalled,
+  };
 
-  Map<String, dynamic> toJson() {
-    return {
-      'id': id,
-      'name': name,
-      'author': author,
-      'iconUrl': iconUrl,
-      'currentVersion': currentVersion,
-      'latestVersion': latestVersion,
-      'sourceType': sourceType,
-      'lastChecked': lastChecked.toIso8601String(),
-      'sourceUrl': sourceUrl,
-      'packageName': packageName,
-      'apkRegex': apkRegex,
-      'trackPreReleases': trackPreReleases,
-    };
-  }
+  factory TrackedApp.fromJson(Map<String, dynamic> json) => TrackedApp(
+    id: json['id'],
+    name: json['name'],
+    author: json['author'] ?? 'Unknown',
+    iconUrl: json['iconUrl'],
+    currentVersion: json['currentVersion'],
+    latestVersion: json['latestVersion'],
+    sourceType: json['sourceType'],
+    lastChecked: DateTime.parse(json['lastChecked']),
+    lastUpdated: json['lastUpdated'] != null ? DateTime.parse(json['lastUpdated']) : null,
+    sourceUrl: json['sourceUrl'] ?? '',
+    packageName: json['packageName'],
+    isInstalled: json['isInstalled'] ?? true,
+  );
 }
 
+// ===================== APP STATE =====================
 class AppState extends ChangeNotifier {
-  List<TrackedApp> _apps = _demoApps;
-  int checkInterval = 6;
-  bool wifiOnly = true;
+  List<TrackedApp> _apps = [];
+  SharedPreferences? _prefs;
+
+  // Settings
   ThemeMode themeMode = ThemeMode.system;
+  bool usePureBlackDarkTheme = false;
+  bool useMaterialYou = true;
+  bool useSystemFont = false;
+  bool pinUpdatesToTop = true;
+  int backgroundCheckInterval = 15;
+  bool disableUpdatesOnMobileData = true;
 
-  List<TrackedApp> get allApps => _apps;
+  List<TrackedApp> get allApps {
+    var apps = List<TrackedApp>.from(_apps);
+    if (pinUpdatesToTop) {
+      apps.sort((a, b) {
+        if (a.hasUpdate && !b.hasUpdate) return -1;
+        if (!a.hasUpdate && b.hasUpdate) return 1;
+        return a.name.compareTo(b.name);
+      });
+    }
+    return apps;
+  }
 
-  List<TrackedApp> get appsWithUpdates =>
-      _apps.where((app) => app.hasUpdate).toList();
+  List<TrackedApp> get appsWithUpdates => _apps.where((app) => app.hasUpdate).toList();
+
+  Future<void> loadSettings() async {
+    _prefs = await SharedPreferences.getInstance();
+    themeMode = ThemeMode.values[_prefs!.getInt('themeMode') ?? ThemeMode.system.index];
+    usePureBlackDarkTheme = _prefs!.getBool('usePureBlackDarkTheme') ?? false;
+    useMaterialYou = _prefs!.getBool('useMaterialYou') ?? true;
+    useSystemFont = _prefs!.getBool('useSystemFont') ?? false;
+    pinUpdatesToTop = _prefs!.getBool('pinUpdatesToTop') ?? true;
+    backgroundCheckInterval = _prefs!.getInt('backgroundCheckInterval') ?? 15;
+    disableUpdatesOnMobileData = _prefs!.getBool('disableUpdatesOnMobileData') ?? true;
+    notifyListeners();
+  }
 
   void setThemeMode(ThemeMode mode) {
     themeMode = mode;
+    _prefs?.setInt('themeMode', mode.index);
     notifyListeners();
   }
 
-  void setCheckInterval(int hours) {
-    checkInterval = hours;
+  void setUsePureBlackDarkTheme(bool value) {
+    usePureBlackDarkTheme = value;
+    _prefs?.setBool('usePureBlackDarkTheme', value);
     notifyListeners();
   }
 
-  void setWifiOnly(bool value) {
-    wifiOnly = value;
+  void setUseMaterialYou(bool value) {
+    useMaterialYou = value;
+    _prefs?.setBool('useMaterialYou', value);
     notifyListeners();
   }
 
-  void importApps(List<TrackedApp> importedApps) {
-    _apps = importedApps;
+  void setPinUpdatesToTop(bool value) {
+    pinUpdatesToTop = value;
+    _prefs?.setBool('pinUpdatesToTop', value);
     notifyListeners();
   }
 
-  Future<void> addAppFromUrl(String url, String type, String regex,
-      bool pre) async {
+  void setBackgroundCheckInterval(int value) {
+    backgroundCheckInterval = value;
+    _prefs?.setInt('backgroundCheckInterval', value);
+    notifyListeners();
+  }
+
+  void setDisableUpdatesOnMobileData(bool value) {
+    disableUpdatesOnMobileData = value;
+    _prefs?.setBool('disableUpdatesOnMobileData', value);
+    notifyListeners();
+  }
+
+  Future<void> addAppFromGitHub(String url) async {
     try {
-      SourceProvider provider;
-      switch (type) {
-        case 'GitHub':
-          provider = GitHubProvider(
-              sourceUrl: url, apkRegex: regex, trackPreReleases: pre);
-          break;
-        default:
-          debugPrint('Source $type not implemented yet');
-          return;
-      }
-      final version = await provider.getLatestVersion();
-      final icon = await provider.getIconUrl();
-      final name = await provider.getAppName();
+      // Parse GitHub URL
+      final uri = Uri.parse(url);
+      final parts = uri.pathSegments;
+      if (parts.length < 2) throw Exception('Invalid GitHub URL');
 
-      _apps.add(TrackedApp(
-        id: DateTime.now().toString(),
-        name: name,
-        packageName: 'unknown',
-        sourceUrl: url,
-        sourceType: type,
-        currentVersion: '1.0',
-        latestVersion: version,
-        iconUrl: icon,
-        author: 'Unknown',
-        lastChecked: DateTime.now(),
-        apkRegex: regex,
-        trackPreReleases: pre,
-      ));
-      notifyListeners();
-    } catch (e) {
-      debugPrint("Error adding app: $e");
-    }
-  }
-}
+      final owner = parts[0];
+      final repo = parts[1];
 
-// ===================== SOURCE PROVIDER ABSTRACTION =====================
+      // Fetch latest release
+      final response = await http.get(
+        Uri.parse('https://api.github.com/repos/$owner/$repo/releases/latest'),
+      );
 
-abstract class SourceProvider {
-  Future<String> getLatestVersion();
-
-  Future<String> getLatestApkUrl();
-
-  Future<String> getIconUrl();
-
-  Future<String> getAppName();
-}
-
-class GitHubProvider implements SourceProvider {
-  final String sourceUrl;
-  final String apkRegex;
-  final bool trackPreReleases;
-
-  GitHubProvider({required this.sourceUrl,
-    required this.apkRegex,
-    required this.trackPreReleases});
-
-  String _getRepoPath() {
-    final uri = Uri.parse(sourceUrl);
-    if (uri.host != 'github.com') {
-      throw Exception('Invalid GitHub URL: $sourceUrl');
-    }
-    if (uri.pathSegments.length >= 2) {
-      return '${uri.pathSegments[0]}/${uri.pathSegments[1]}';
-    }
-    throw Exception('Invalid GitHub URL path: $sourceUrl');
-  }
-
-  Future<Map<String, dynamic>> _fetchLatestReleaseData() async {
-    final repoPath = _getRepoPath();
-    final releasesUrl =
-    Uri.parse('https://api.github.com/repos/$repoPath/releases');
-    final response = await http.get(releasesUrl);
-
-    if (response.statusCode == 200) {
-      final releases = jsonDecode(response.body) as List;
-      if (releases.isEmpty) {
-        throw Exception('No releases found for $repoPath');
-      }
-
-      final filteredReleases = trackPreReleases
-          ? releases
-          : releases.where((r) => r['prerelease'] == false).toList();
-      if (filteredReleases.isEmpty) {
-        throw Exception('No stable releases found for $repoPath');
-      }
-      return filteredReleases.first as Map<String, dynamic>;
-    } else {
-      throw Exception(
-          'Failed to load releases for $repoPath: ${response.statusCode}');
-    }
-  }
-
-  @override
-  Future<String> getLatestVersion() async {
-    final release = await _fetchLatestReleaseData();
-    return release['tag_name'] as String;
-  }
-
-  @override
-  Future<String> getLatestApkUrl() async {
-    final release = await _fetchLatestReleaseData();
-    final assets = release['assets'] as List;
-    final regex = RegExp(apkRegex);
-
-    final apkAsset = assets.firstWhere(
-            (asset) => regex.hasMatch(asset['name'] as String),
-        orElse: () =>
-        throw Exception(
-            'No APK found matching regex in the latest release'));
-
-    return apkAsset['browser_download_url'] as String;
-  }
-
-  @override
-  Future<String> getIconUrl() async {
-    try {
-      final repoPath = _getRepoPath();
-      final repoUrl = Uri.parse('https://api.github.com/repos/$repoPath');
-      final response = await http.get(repoUrl);
       if (response.statusCode == 200) {
-        final repoData = jsonDecode(response.body) as Map<String, dynamic>;
-        return repoData['owner']['avatar_url'] as String;
+        final data = json.decode(response.body);
+        final app = TrackedApp(
+          id: DateTime.now().millisecondsSinceEpoch.toString(),
+          name: repo,
+          author: owner,
+          iconUrl: '📦',
+          currentVersion: data['tag_name'],
+          latestVersion: data['tag_name'],
+          sourceType: 'GitHub',
+          lastChecked: DateTime.now(),
+          sourceUrl: url,
+        );
+        _apps.add(app);
+        await _saveApps();
+        notifyListeners();
       }
     } catch (e) {
-      debugPrint("Could not fetch repo icon: $e");
+      rethrow;
     }
-    return '📦';
   }
 
-  @override
-  Future<String> getAppName() async {
-    final repoPath = _getRepoPath();
-    return repoPath
-        .split('/')
-        .last;
+  Future<void> exportApps() async {
+    final dir = await getApplicationDocumentsDirectory();
+    final file = File('${dir.path}/gettify_export.json');
+    final json = jsonEncode(_apps.map((app) => app.toJson()).toList());
+    await file.writeAsString(json);
+  }
+
+  Future<void> importApps() async {
+    final dir = await getApplicationDocumentsDirectory();
+    final file = File('${dir.path}/gettify_export.json');
+    if (await file.exists()) {
+      final jsonStr = await file.readAsString();
+      final list = jsonDecode(jsonStr) as List;
+      _apps = list.map((e) => TrackedApp.fromJson(e)).toList();
+      await _saveApps();
+      notifyListeners();
+    }
+  }
+
+  Future<void> _saveApps() async {
+    final json = jsonEncode(_apps.map((app) => app.toJson()).toList());
+    await _prefs?.setString('apps', json);
+  }
+
+  void removeApp(String id) {
+    _apps.removeWhere((app) => app.id == id);
+    _saveApps();
+    notifyListeners();
   }
 }
 
-// ===================== HOME SCREEN & NAVIGATION =====================
-
+// ===================== HOME SCREEN =====================
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -305,743 +268,585 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   int _selectedIndex = 0;
 
-  static final List<Widget> _widgetOptions = <Widget>[
-    const AllAppsTab(),
-    const UpdatesTab(),
-    const SettingsTab(),
-  ];
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: IndexedStack(
         index: _selectedIndex,
-        children: _widgetOptions,
+        children: const [
+          AppsTab(),
+          AddAppTab(),
+          ImportExportTab(),
+          SettingsTab(),
+        ],
       ),
       floatingActionButton: _selectedIndex == 0
           ? FloatingActionButton.extended(
-        onPressed: () =>
-            showModalBottomSheet(
-              context: context,
-              isScrollControlled: true,
-              builder: (context) => const AddAppBottomSheet(),
-            ),
+        onPressed: () => setState(() => _selectedIndex = 1),
         icon: const Icon(Icons.add),
         label: const Text('Add App'),
       )
           : null,
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedIndex,
-        onDestinationSelected: (index) =>
-            setState(() => _selectedIndex = index),
+        onDestinationSelected: (index) => setState(() => _selectedIndex = index),
         destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.apps_outlined),
-            selectedIcon: Icon(Icons.apps),
-            label: 'All Apps',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.system_update_outlined),
-            selectedIcon: Icon(Icons.system_update),
-            label: 'Updates',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.settings_outlined),
-            selectedIcon: Icon(Icons.settings),
-            label: 'Settings',
-          ),
+          NavigationDestination(icon: Icon(Icons.apps), label: 'Apps'),
+          NavigationDestination(icon: Icon(Icons.add), label: 'Add app'),
+          NavigationDestination(icon: Icon(Icons.import_export), label: 'Import/export'),
+          NavigationDestination(icon: Icon(Icons.settings), label: 'Settings'),
         ],
       ),
     );
   }
 }
 
-// ===================== TABS =====================
-
-class AllAppsTab extends StatelessWidget {
-  const AllAppsTab({super.key});
+// ===================== APPS TAB =====================
+class AppsTab extends StatelessWidget {
+  const AppsTab({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final apps = context
-        .watch<AppState>()
-        .allApps;
-    return CustomScrollView(
-      slivers: [
-        const SliverAppBar.large(title: Text('All Apps')),
-        if (apps.isEmpty)
-          const SliverFillRemaining(
-            child: EmptyState(
-              icon: Icons.add_circle_outline,
-              title: 'No apps added',
-              subtitle: 'Tap the "Add App" button to start',
-            ),
-          )
-        else
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-            sliver: SliverList.builder(
-              itemCount: apps.length,
-              itemBuilder: (context, index) =>
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
-                    child: AppCard(app: apps[index]),
-                  ),
-            ),
+    final state = context.watch<AppState>();
+    final apps = state.allApps;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Apps'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.search),
+            onPressed: () {},
           ),
-      ],
+          PopupMenuButton(
+            itemBuilder: (context) => [
+              const PopupMenuItem(value: 'refresh', child: Text('Check for updates')),
+              const PopupMenuItem(value: 'sort', child: Text('Sort')),
+            ],
+          ),
+        ],
+      ),
+      body: apps.isEmpty
+          ? const Center(
+        child: Text('No apps added.\nTap "Add app" to get started.', textAlign: TextAlign.center),
+      )
+          : ListView.builder(
+        itemCount: apps.length,
+        itemBuilder: (context, index) => AppListTile(app: apps[index]),
+      ),
     );
   }
 }
 
-class UpdatesTab extends StatelessWidget {
-  const UpdatesTab({super.key});
+class AppListTile extends StatelessWidget {
+  final TrackedApp app;
+
+  const AppListTile({super.key, required this.app});
 
   @override
   Widget build(BuildContext context) {
-    final updates = context
-        .watch<AppState>()
-        .appsWithUpdates;
-    return CustomScrollView(
-      slivers: [
-        const SliverAppBar.large(title: Text('Updates')),
-        if (updates.isEmpty)
-          const SliverFillRemaining(
-            child: EmptyState(
-              icon: Icons.check_circle_outline,
-              title: 'All apps up to date',
-              subtitle: "You're running the latest versions",
+    final dateFormat = DateFormat('yyyy-MM-dd');
+
+    return ListTile(
+      leading: CircleAvatar(
+        child: Text(app.iconUrl, style: const TextStyle(fontSize: 24)),
+      ),
+      title: Text(app.name),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('By ${app.author}'),
+          const SizedBox(height: 4),
+          Text(
+            '${app.currentVersion} • ${dateFormat.format(app.lastChecked)}',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
+      ),
+      trailing: app.hasUpdate
+          ? Icon(Icons.arrow_downward, color: Theme.of(context).colorScheme.primary)
+          : null,
+      onTap: () => _showAppDetails(context),
+      onLongPress: () => _showAppMenu(context),
+    );
+  }
+
+  void _showAppDetails(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => AppDetailsSheet(app: app),
+    );
+  }
+
+  void _showAppMenu(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.refresh),
+              title: const Text('Check for update'),
+              onTap: () => Navigator.pop(context),
             ),
-          )
-        else
-          ...[
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: FilledButton.icon(
-                  onPressed: () {},
-                  icon: const Icon(Icons.system_update),
-                  label: Text('Update All (${updates.length})'),
-                  style:
-                  FilledButton.styleFrom(padding: const EdgeInsets.all(16)),
-                ),
-              ),
-            ),
-            SliverPadding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              sliver: SliverList.builder(
-                itemCount: updates.length,
-                itemBuilder: (context, index) =>
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 12),
-                      child: AppCard(app: updates[index]),
-                    ),
-              ),
+            ListTile(
+              leading: const Icon(Icons.delete),
+              title: const Text('Remove'),
+              onTap: () {
+                context.read<AppState>().removeApp(app.id);
+                Navigator.pop(context);
+              },
             ),
           ],
-      ],
+        ),
+      ),
     );
   }
 }
 
+class AppDetailsSheet extends StatelessWidget {
+  final TrackedApp app;
+
+  const AppDetailsSheet({super.key, required this.app});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(app.name, style: Theme.of(context).textTheme.headlineSmall),
+          const SizedBox(height: 8),
+          Text('By ${app.author}'),
+          const SizedBox(height: 16),
+          ListTile(
+            title: const Text('Current version'),
+            subtitle: Text(app.currentVersion),
+          ),
+          ListTile(
+            title: const Text('Latest version'),
+            subtitle: Text(app.latestVersion),
+          ),
+          ListTile(
+            title: const Text('Source'),
+            subtitle: Text(app.sourceType),
+          ),
+          const SizedBox(height: 16),
+          if (app.hasUpdate)
+            FilledButton.icon(
+              onPressed: () {},
+              icon: const Icon(Icons.download),
+              label: const Text('Update'),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// ===================== ADD APP TAB =====================
+class AddAppTab extends StatefulWidget {
+  const AddAppTab({super.key});
+
+  @override
+  State<AddAppTab> createState() => _AddAppTabState();
+}
+
+class _AddAppTabState extends State<AddAppTab> {
+  final _urlController = TextEditingController();
+  bool _isLoading = false;
+  String? _error;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Add app')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: _urlController,
+              decoration: InputDecoration(
+                labelText: 'App source URL *',
+                hintText: 'https://github.com/owner/repo',
+                border: const OutlineInputBorder(),
+                errorText: _error,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _isLoading ? null : _addApp,
+                    child: _isLoading
+                        ? const SizedBox(
+                      height: 20,
+                      width: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                        : const Text('Add'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: FilledButton(
+                    onPressed: () {},
+                    child: const Text('Search'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 24),
+            const Divider(),
+            const SizedBox(height: 16),
+            TextButton(
+              onPressed: () {},
+              child: const Text('Supported sources'),
+            ),
+            TextButton(
+              onPressed: () {},
+              child: const Text('Crowdsourced app configurations'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _addApp() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      await context.read<AppState>().addAppFromGitHub(_urlController.text);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('App added successfully')),
+        );
+        _urlController.clear();
+      }
+    } catch (e) {
+      setState(() => _error = 'Failed to add app: ${e.toString()}');
+    } finally {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    _urlController.dispose();
+    super.dispose();
+  }
+}
+
+// ===================== IMPORT/EXPORT TAB =====================
+class ImportExportTab extends StatelessWidget {
+  const ImportExportTab({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Import/export')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            OutlinedButton(
+              onPressed: () {},
+              child: const Text('Pick export directory'),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton(
+              onPressed: () async {
+                await context.read<AppState>().exportApps();
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Apps exported')),
+                  );
+                }
+              },
+              child: const Text('Gettify export'),
+            ),
+            const SizedBox(height: 12),
+            FilledButton(
+              onPressed: () async {
+                await context.read<AppState>().importApps();
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Apps imported')),
+                  );
+                }
+              },
+              child: const Text('Gettify import'),
+            ),
+            const SizedBox(height: 24),
+            const Divider(),
+            const SizedBox(height: 16),
+            const Text('Search source', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 16),
+            OutlinedButton(
+              onPressed: () {},
+              child: const Text('Import from URL list'),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton(
+              onPressed: () {},
+              child: const Text('Import from URLs in file (like OPML)'),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton(
+              onPressed: () {},
+              child: const Text('Import GitHub starred repositories'),
+            ),
+            const SizedBox(height: 24),
+            const Text(
+              'Imported apps may incorrectly show as "not installed". '
+                  'To fix this, re-install them through Gettify. '
+                  'This should not affect app data.\n\n'
+                  'Only affects URL and third-party import methods.',
+              style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ===================== SETTINGS TAB =====================
 class SettingsTab extends StatelessWidget {
   const SettingsTab({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final state = context.watch<AppState>();
-
-    return CustomScrollView(
-      slivers: [
-        const SliverAppBar.large(title: Text('Settings')),
-        SliverPadding(
-          padding: const EdgeInsets.all(16),
-          sliver: SliverList(
-            delegate: SliverChildListDelegate([
-              Card(
-                child: Column(
-                  children: [
-                    ListTile(
-                      leading: const Icon(Icons.dark_mode_outlined),
-                      title: const Text('Theme'),
-                      trailing: Text(state.themeMode
-                          .toString()
-                          .split('.')
-                          .last),
-                      onTap: () =>
-                          showDialog(
-                            context: context,
-                            builder: (_) =>
-                                AlertDialog(
-                                  title: const Text('Theme'),
-                                  content: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: ThemeMode.values
-                                        .map((t) =>
-                                        RadioListTile<ThemeMode>(
-                                          title: Text(t
-                                              .toString()
-                                              .split('.')
-                                              .last),
-                                          value: t,
-                                          groupValue: state.themeMode,
-                                          onChanged: (val) {
-                                            if (val != null) {
-                                              context
-                                                  .read<AppState>()
-                                                  .setThemeMode(val);
-                                              Navigator.pop(context);
-                                            }
-                                          },
-                                        ))
-                                        .toList(),
-                                  ),
-                                ),
-                          ),
-                    ),
-                    ListTile(
-                      title: const Text('Check interval'),
-                      trailing: Text('${state.checkInterval} hours'),
-                      onTap: () =>
-                          showDialog(
-                            context: context,
-                            builder: (_) =>
-                                AlertDialog(
-                                  title: const Text('Check every...'),
-                                  content: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [1, 6, 12, 24, 48]
-                                        .map((h) =>
-                                        RadioListTile<int>(
-                                          title: Text('$h hours'),
-                                          value: h,
-                                          groupValue: state.checkInterval,
-                                          onChanged: (val) {
-                                            if (val != null) {
-                                              context
-                                                  .read<AppState>()
-                                                  .setCheckInterval(val);
-                                              Navigator.pop(context);
-                                            }
-                                          },
-                                        ))
-                                        .toList(),
-                                  ),
-                                ),
-                          ),
-                    ),
-                    SwitchListTile(
-                      title: const Text('Check only on WiFi'),
-                      subtitle: const Text('Avoid mobile data usage'),
-                      value: state.wifiOnly,
-                      onChanged: (value) =>
-                          context.read<AppState>().setWifiOnly(value),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-              Card(
-                child: Column(
-                  children: [
-                    ListTile(
-                      leading: const Icon(Icons.download),
-                      title: const Text('Export apps'),
-                      onTap: () async {
-                        final messenger = ScaffoldMessenger.of(context);
-                        final appState = context.read<AppState>();
-                        try {
-                          final dir =
-                          await getApplicationDocumentsDirectory();
-                          // FIX: Changed file name
-                          final file = File('${dir.path}/Gettify_apps.json');
-                          final jsonString = json.encode(
-                              appState.allApps.map((a) => a.toJson()).toList());
-                          await file.writeAsString(jsonString);
-
-                          messenger.showSnackBar(SnackBar(
-                              content: Text('Exported to ${file.path}')));
-                        } catch (e) {
-                          messenger.showSnackBar(
-                              SnackBar(content: Text('Export failed: $e')));
-                        }
-                      },
-                    ),
-                    ListTile(
-                      leading: const Icon(Icons.upload),
-                      title: const Text('Import apps'),
-                      onTap: () async {
-                        final messenger = ScaffoldMessenger.of(context);
-                        final appState = context.read<AppState>();
-                        try {
-                          final dir = await getApplicationDocumentsDirectory();
-                          // FIX: Changed file name
-                          final file = File('${dir.path}/Gettify_apps.json');
-                          if (await file.exists()) {
-                            final jsonStr = await file.readAsString();
-                            final list =
-                            json.decode(jsonStr) as List<dynamic>;
-                            final importedApps = list
-                                .map((j) =>
-                                TrackedApp.fromJson(
-                                    j as Map<String, dynamic>))
-                                .toList();
-                            appState.importApps(importedApps);
-
-                            messenger.showSnackBar(
-                                const SnackBar(content: Text('Imported!')));
-                          } else {
-                            messenger.showSnackBar(const SnackBar(
-                                content: Text('No export file found')));
-                          }
-                        } catch (e) {
-                          messenger.showSnackBar(
-                              SnackBar(content: Text('Import failed: $e')));
-                        }
-                      },
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-              Card(
-                child: Column(
-                  children: [
-                    const ListTile(
-                      leading: Icon(Icons.info_outline),
-                      title: Text('Version'),
-                      subtitle: Text('1.0.0'),
-                    ),
-                    ListTile(
-                      leading: const Icon(Icons.code),
-                      title: const Text('Source code'),
-                      onTap: () =>
-                          launchUrl(
-                            // FIX: Corrected URL
-                              Uri.parse(
-                                  'https://github.com/expertmanofficial/gettify'),
-                              mode: LaunchMode.externalApplication),
-                    ),
-                    ListTile(
-                      leading: const Icon(Icons.contact_mail),
-                      title: const Text('Contact the team'),
-                      onTap: () =>
-                          launchUrl(
-                              Uri.parse('https://x.com/imorisune'),
-                              mode: LaunchMode.externalApplication),
-                    ),
-                  ],
-                ),
-              ),
-            ]),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-// ===================== OTHER WIDGETS =====================
-
-class AppDetailsScreen extends StatelessWidget {
-  final TrackedApp app;
-
-  const AppDetailsScreen({super.key, required this.app});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final isNetworkIcon = app.iconUrl.startsWith('http');
     return Scaffold(
-      body: CustomScrollView(
-        slivers: [
-          SliverAppBar.large(title: Text(app.name)),
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                children: [
-                  SizedBox(
-                    width: 96,
-                    height: 96,
-                    child: isNetworkIcon
-                        ? ClipRRect(
-                      borderRadius: BorderRadius.circular(20),
-                      child: Image.network(
-                        app.iconUrl,
-                        fit: BoxFit.cover,
-                        errorBuilder: (c, e, s) =>
-                        const Icon(Icons.broken_image, size: 48),
-                      ),
-                    )
-                        : Container(
-                      decoration: BoxDecoration(
-                        color: theme.colorScheme.primaryContainer,
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Center(
-                        child: Text(app.iconUrl,
-                            style: const TextStyle(fontSize: 48)),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  Text(app.name,
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.headlineSmall
-                          ?.copyWith(fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  Text(app.author,
-                      style: theme.textTheme.bodyLarge
-                          ?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant)),
-                  const SizedBox(height: 24),
-                  if (app.hasUpdate)
-                    FilledButton.icon(
-                      onPressed: () {},
-                      icon: const Icon(Icons.system_update),
-                      label: Text('Update to ${app.latestVersion}'),
-                      style: FilledButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 32, vertical: 16)),
-                    ),
-                  const SizedBox(height: 32),
-                  _InfoCard(
-                      title: 'Current Version',
-                      value: app.currentVersion,
-                      icon: Icons.check_circle),
-                  const SizedBox(height: 12),
-                  _InfoCard(
-                      title: 'Latest Version',
-                      value: app.latestVersion,
-                      icon: Icons.new_releases),
-                  const SizedBox(height: 12),
-                  _InfoCard(
-                      title: 'Source',
-                      value: app.sourceType,
-                      icon: Icons.cloud),
-                  const SizedBox(height: 12),
-                  _InfoCard(
-                      title: 'Last Checked',
-                      value: _formatTime(app.lastChecked),
-                      icon: Icons.schedule),
-                ],
-              ),
-            ),
+      appBar: AppBar(title: const Text('Settings')),
+      body: ListView(
+        children: [
+          const SettingsSection(title: 'Appearance'),
+          SettingsDropdown(
+            title: 'Theme',
+            value: context.watch<AppState>().themeMode,
+            items: const {
+              ThemeMode.system: 'Follow system',
+              ThemeMode.light: 'Light',
+              ThemeMode.dark: 'Dark',
+            },
+            onChanged: (value) => context.read<AppState>().setThemeMode(value!),
+          ),
+          SettingsSwitch(
+            title: 'Use pure black dark theme',
+            value: context.watch<AppState>().usePureBlackDarkTheme,
+            onChanged: (value) => context.read<AppState>().setUsePureBlackDarkTheme(value),
+          ),
+          SettingsSwitch(
+            title: 'Use Material You',
+            value: context.watch<AppState>().useMaterialYou,
+            onChanged: (value) => context.read<AppState>().setUseMaterialYou(value),
+          ),
+          SettingsSwitch(
+            title: 'Pin updates to top of apps view',
+            value: context.watch<AppState>().pinUpdatesToTop,
+            onChanged: (value) => context.read<AppState>().setPinUpdatesToTop(value),
+          ),
+          const Divider(),
+          const SettingsSection(title: 'Updates'),
+          SettingsSlider(
+            title: 'Background update checking interval',
+            subtitle: '${context.watch<AppState>().backgroundCheckInterval} minutes',
+            value: context.watch<AppState>().backgroundCheckInterval.toDouble(),
+            min: 15,
+            max: 360,
+            divisions: 23,
+            onChanged: (value) => context.read<AppState>().setBackgroundCheckInterval(value.toInt()),
+          ),
+          SettingsSwitch(
+            title: 'Disable background updates when not on Wi-Fi',
+            value: context.watch<AppState>().disableUpdatesOnMobileData,
+            onChanged: (value) => context.read<AppState>().setDisableUpdatesOnMobileData(value),
+          ),
+          const Divider(),
+          const SettingsSection(title: 'About'),
+          SettingsTile(
+            title: 'Version',
+            onTap: () => _showVersionInfo(context),
+          ),
+          SettingsTile(
+            title: 'Source code',
+            subtitle: 'View on GitHub',
+            onTap: () => launchUrl(Uri.parse('https://github.com/expertmanofficial/gettify')),
+          ),
+          SettingsTile(
+            title: 'Contact team',
+            subtitle: 'On X',
+            onTap: () => launchUrl(Uri.parse('https://x.com/imorisune')),
           ),
         ],
       ),
     );
   }
 
-  String _formatTime(DateTime time) {
-    final diff = DateTime.now().difference(time);
-    if (diff.inMinutes < 1) return 'just now';
-    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
-    if (diff.inHours < 24) return '${diff.inHours}h ago';
-    return '${diff.inDays}d ago';
-  }
-}
-
-class _InfoCard extends StatelessWidget {
-  final String title;
-  final String value;
-  final IconData icon;
-
-  const _InfoCard(
-      {required this.title, required this.value, required this.icon});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          children: [
-            Icon(icon, color: theme.colorScheme.primary),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(title,
-                      style: theme.textTheme.bodySmall
-                          ?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant)),
-                  const SizedBox(height: 4),
-                  Text(value, style: theme.textTheme.titleMedium),
-                ],
-              ),
+  Future<void> _showVersionInfo(BuildContext context) async {
+    final packageInfo = await PackageInfo.fromPlatform();
+    if (context.mounted) {
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Version'),
+          content: Text('${packageInfo.version} (${packageInfo.buildNumber})'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('OK'),
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class AppCard extends StatelessWidget {
-  final TrackedApp app;
-
-  const AppCard({super.key, required this.app});
-
-  @override
-  Widget build(BuildContext context) {
-    final isNetworkIcon = app.iconUrl.startsWith('http');
-    return Card(
-      child: ListTile(
-        onTap: () =>
-            Navigator.push(
-                context,
-                MaterialPageRoute(
-                    builder: (context) => AppDetailsScreen(app: app))),
-        leading: SizedBox(
-          width: 48,
-          height: 48,
-          child: isNetworkIcon
-              ? ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: Image.network(
-              app.iconUrl,
-              fit: BoxFit.cover,
-              errorBuilder: (c, e, s) => const Icon(Icons.broken_image),
-            ),
-          )
-              : Container(
-            decoration: BoxDecoration(
-              color: Theme
-                  .of(context)
-                  .colorScheme
-                  .primaryContainer,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Center(
-                child: Text(app.iconUrl,
-                    style: const TextStyle(fontSize: 24))),
-          ),
-        ),
-        title: Text(app.name),
-        subtitle: Text('v${app.currentVersion}'),
-        trailing: app.hasUpdate
-            ? FilledButton(onPressed: () {}, child: const Text('Update'))
-            : const SizedBox.shrink(),
-      ),
-    );
-  }
-}
-
-class EmptyState extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String subtitle;
-
-  const EmptyState({super.key,
-    required this.icon,
-    required this.title,
-    required this.subtitle});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final color = theme.colorScheme.onSurfaceVariant;
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, size: 80, color: color.withOpacity(0.5)),
-          const SizedBox(height: 16),
-          Text(
-              title, style: theme.textTheme.titleLarge?.copyWith(color: color)),
-          const SizedBox(height: 8),
-          Text(subtitle,
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodyMedium
-                  ?.copyWith(color: color.withOpacity(0.7))),
-        ],
-      ),
-    );
-  }
-}
-
-class AddAppBottomSheet extends StatefulWidget {
-  const AddAppBottomSheet({super.key});
-
-  @override
-  State<AddAppBottomSheet> createState() => _AddAppBottomSheetState();
-}
-
-class _AddAppBottomSheetState extends State<AddAppBottomSheet> {
-  final _formKey = GlobalKey<FormState>();
-  String _sourceType = 'GitHub';
-  final _urlController = TextEditingController();
-  final _regexController = TextEditingController(text: r'.*\.apk$');
-  bool _preReleases = false;
-  bool _isAdding = false;
-
-  @override
-  void dispose() {
-    _urlController.dispose();
-    _regexController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _addApp() async {
-    if (!(_formKey.currentState?.validate() ?? false)) {
-      return;
+      );
     }
-    setState(() => _isAdding = true);
-
-    final appState = context.read<AppState>();
-    final navigator = Navigator.of(context);
-
-    await appState.addAppFromUrl(
-      _urlController.text.trim(),
-      _sourceType,
-      _regexController.text.trim(),
-      _preReleases,
-    );
-
-    navigator.pop();
   }
+}
+
+// ===================== SETTINGS WIDGETS =====================
+class SettingsSection extends StatelessWidget {
+  final String title;
+
+  const SettingsSection({super.key, required this.title});
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: MediaQuery
-          .of(context)
-          .viewInsets,
-      child: Container(
-        padding: const EdgeInsets.all(24),
-        child: Form(
-          key: _formKey,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Add New App', style: Theme
-                  .of(context)
-                  .textTheme
-                  .headlineSmall),
-              const SizedBox(height: 24),
-              DropdownButtonFormField<String>(
-                value: _sourceType,
-                isExpanded: true,
-                decoration: const InputDecoration(
-                    border: OutlineInputBorder(), labelText: 'Source Type'),
-                items: const [
-                  DropdownMenuItem(
-                      value: 'GitHub', child: Text('GitHub Releases')),
-                  DropdownMenuItem(value: 'GitLab', child: Text('GitLab')),
-                  DropdownMenuItem(
-                      value: 'Codeberg', child: Text('Codeberg / Forgejo')),
-                  DropdownMenuItem(value: 'F-Droid', child: Text('F-Droid')),
-                  DropdownMenuItem(
-                      value: 'IzzyOnDroid', child: Text('IzzyOnDroid')),
-                  DropdownMenuItem(value: 'APKPure', child: Text('APKPure')),
-                  DropdownMenuItem(
-                      value: 'APKMirror',
-                      child: Text('APKMirror (track only)')),
-                  DropdownMenuItem(
-                      value: 'HTML', child: Text('HTML / Custom scraping')),
-                ],
-                onChanged: (val) => setState(() => _sourceType = val!),
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _urlController,
-                decoration: const InputDecoration(
-                    labelText: 'Source URL', border: OutlineInputBorder()),
-                autovalidateMode: AutovalidateMode.onUserInteraction,
-                validator: (value) {
-                  if (value == null || value
-                      .trim()
-                      .isEmpty) {
-                    return 'URL cannot be empty';
-                  }
-                  if (!value.startsWith('http://') &&
-                      !value.startsWith('https://')) {
-                    return 'Please enter a valid URL';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _regexController,
-                decoration: const InputDecoration(
-                    labelText: 'APK filename regex (optional)',
-                    border: OutlineInputBorder()),
-              ),
-              SwitchListTile(
-                title: const Text('Include pre-releases'),
-                value: _preReleases,
-                onChanged: (v) => setState(() => _preReleases = v),
-                contentPadding: EdgeInsets.zero,
-              ),
-              const SizedBox(height: 24),
-              if (_isAdding)
-                const Center(child: CircularProgressIndicator())
-              else
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    TextButton(
-                        onPressed: () => Navigator.pop(context),
-                        child: const Text('Cancel')),
-                    const SizedBox(width: 8),
-                    FilledButton(onPressed: _addApp, child: const Text('Add')),
-                  ],
-                ),
-            ],
-          ),
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+      child: Text(
+        title,
+        style: TextStyle(
+          color: Theme.of(context).colorScheme.primary,
+          fontWeight: FontWeight.bold,
         ),
       ),
     );
   }
 }
 
-// ===================== DEMO DATA =====================
+class SettingsSwitch extends StatelessWidget {
+  final String title;
+  final String? subtitle;
+  final bool value;
+  final ValueChanged<bool> onChanged;
 
-final List<TrackedApp> _demoApps = [
-  TrackedApp(
-    id: 'signal',
-    name: 'Signal',
-    author: 'Signal Foundation',
-    iconUrl: '🔒',
-    currentVersion: '6.40.1',
-    latestVersion: '6.41.0',
-    sourceType: 'Website',
-    lastChecked: DateTime.now().subtract(const Duration(hours: 2)),
-  ),
-  TrackedApp(
-    id: 'bitwarden',
-    name: 'Bitwarden',
-    author: '8bit Solutions LLC',
-    iconUrl: '🛡️',
-    currentVersion: '2023.10.0',
-    latestVersion: '2023.10.0',
-    sourceType: 'GitHub',
-    lastChecked: DateTime.now().subtract(const Duration(minutes: 45)),
-  ),
-  TrackedApp(
-    id: 'revanced',
-    name: 'ReVanced Manager',
-    author: 'ReVanced Team',
-    iconUrl: '🚀',
-    currentVersion: '1.9.0',
-    latestVersion: '1.9.5',
-    sourceType: 'GitHub',
-    lastChecked: DateTime.now().subtract(const Duration(days: 1)),
-  ),
-  TrackedApp(
-    id: 'vlc',
-    name: 'VLC for Android',
-    author: 'VideoLAN',
-    iconUrl: '🚦',
-    currentVersion: '3.5.3',
-    latestVersion: '3.5.3',
-    sourceType: 'Website',
-    lastChecked: DateTime.now().subtract(const Duration(hours: 12)),
-  ),
-];
+  const SettingsSwitch({
+    super.key,
+    required this.title,
+    this.subtitle,
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SwitchListTile(
+      title: Text(title),
+      subtitle: subtitle != null ? Text(subtitle!) : null,
+      value: value,
+      onChanged: onChanged,
+    );
+  }
+}
+
+class SettingsDropdown<T> extends StatelessWidget {
+  final String title;
+  final T value;
+  final Map<T, String> items;
+  final ValueChanged<T?> onChanged;
+
+  const SettingsDropdown({
+    super.key,
+    required this.title,
+    required this.value,
+    required this.items,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      title: Text(title),
+      subtitle: DropdownButton<T>(
+        value: value,
+        isExpanded: true,
+        items: items.entries.map((e) => DropdownMenuItem(value: e.key, child: Text(e.value))).toList(),
+        onChanged: onChanged,
+      ),
+    );
+  }
+}
+
+class SettingsSlider extends StatelessWidget {
+  final String title;
+  final String? subtitle;
+  final double value;
+  final double min;
+  final double max;
+  final int divisions;
+  final ValueChanged<double> onChanged;
+
+  const SettingsSlider({
+    super.key,
+    required this.title,
+    this.subtitle,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.divisions,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      title: Text(title),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (subtitle != null) Text(subtitle!),
+          Slider(
+            value: value,
+            min: min,
+            max: max,
+            divisions: divisions,
+            onChanged: onChanged,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class SettingsTile extends StatelessWidget {
+  final String title;
+  final String? subtitle;
+  final VoidCallback onTap;
+
+  const SettingsTile({
+    super.key,
+    required this.title,
+    this.subtitle,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      title: Text(title),
+      subtitle: subtitle != null ? Text(subtitle!) : null,
+      onTap: onTap,
+    );
+  }
+}
