@@ -1,3 +1,11 @@
+## ⚠️ Abandoned — Gettify no longer works
+
+This project is abandoned and no longer works. It will not receive updates or fixes.
+
+If you're looking for a working alternative, try **[ObtainX](https://github.com/bikram-agarwal/ObtainX)** — a fork of [Obtainium](https://github.com/ImranR98/Obtainium) that gets Android app updates straight from the source.
+
+---
+
 ![250b274b-7dbc-4d8c-8c5d-3c0871bf3bf1_0](https://github.com/user-attachments/assets/fae42a8c-219a-4227-af14-a87e15be584c)
 
 
